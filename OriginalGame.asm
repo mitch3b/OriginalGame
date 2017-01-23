@@ -62,7 +62,9 @@ MAX_FALL_SPEED = %00000111
 
 p1_current_sprite_index .rs 1 ; TODO this should be calculatable from the sprite itself
 
-collision_map .rs 30 ; This should be 960, but keep it simple for now
+collision_map .rs 960 ; This should be 960, but keep it simple for now
+collision_high  .rs 1   ; Don't know a better way to do this at least yet
+collision_low .rs 1
 
 ;;;;;;;;;;;;;;;
 
@@ -111,7 +113,6 @@ InitState:
 
   JSR LoadP1
   JSR LoadBackground
-  JSR LoadCollisionData
   JSR LoadAttributes
   JSR LoadPalettes
 
@@ -184,6 +185,10 @@ LoadPalettesLoop:
   RTS
 
 LoadBackground:
+  LDA low(collision_map)
+  STA collision_low
+  LDA high(collision_map)
+  STA collision_high
   LDA PPU_STATUS        ; read PPU status to reset the high/low latch
   LDA #$20
   STA PPU_ADDRESS       ; write the high byte of $2000 address
@@ -194,47 +199,42 @@ LoadBackground:
   LDA #$24
 LoadBackgroundLoop:
   STA PPU_DATA
-  INX
-  CPX #$00
-  BNE LoadBackgroundLoop
+  STA (collision_low), y
   INY
-  CPY #$03
+  CPY #$00
   BNE LoadBackgroundLoop
-  LDX #$00
+  LDA collision_high
+  CLC
+  ADC #$01
+  STA collision_high
+  LDA #$24 ; reset a back to empty background
+  INX
+  CPX #$03
+  BNE LoadBackgroundLoop
+  LDY #$00
   LDA #$00
 LoadBackgroundFloorLoop:
   STA PPU_DATA
-  INX
-  CPX #$10
+  STA (collision_low), y
+  INY
+  CPY #$10
   BNE LoadBackgroundFloorLoop
-  LDX #$00
+  LDA collision_low
+  CLC
+  ADC #$10
+  STA collision_low
+  LDA collision_high
+  ADC #$00 ; only want to add the carry bit
+  STA collision_high
+  LDY #$00
   LDA #$24
 LoadBackgroundRestLoop:        ; loaded 8x3 + 1 = 25. Have 5 left. 5x32 = 160 (or A0 in hex)
   STA PPU_DATA
-  INX
-  CPX #$B0
+  STA (collision_low), y
+  INY
+  CPY #$B0
   BNE LoadBackgroundRestLoop
 LoadBackgroundDone:
-  RTS
-
-; This should be loaded while background loaded
-LoadCollisionData:
-  LDX #$00
-  LDA #$00
-LoadCollisionDataLoop:
-  STA collision_map, x
-  INX
-  CPX #$17   ; 23d
-  BNE LoadCollisionDataLoop
-  LDA #$01
-  STA collision_map, x
-  INX
-  LDA #$00
-LoadCollisionDataLoop2:
-  STA collision_map, x
-  INX
-  CPX #$06 ; 24 already, do the rest
-  BNE LoadCollisionDataLoop2
   RTS
 
 ;TODO this is just a proof of checking nametable. will want more robust
@@ -353,12 +353,43 @@ MoveP1Vertically:
   JSR UpdateP1WithYVelocity
 
   ; Do collision detection
+  LDA low(collision_map)
+  STA collision_low
+  LDA high(collision_map)
+  STA collision_high
   LDA p1_sprite_y
   LSR A
   LSR A
-  LSR A ; divide by 8
-  TAX
-  LDA collision_map, x
+  LSR A ; divide by 8 to remove mid pixels
+  ; 32 per line, 256 per byte so 8 different sections. so mod 8 goes to low bit and divide 8 goes to high
+  AND #%00000111 ; Mod 8
+  CLC
+  ADC collision_low
+  STA collision_low
+  LDA collision_high
+  ADC #$00 ; add any carry to high bit
+  STA collision_high
+  LDA p1_sprite_y
+  LSR A
+  LSR A
+  LSR A; divide by 8 to remove mid pixels
+  LSR A
+  LSR A
+  LSR A ; divide by 8 because 8 tiles high x 32 tiles wide = 256 bytes, so add to high
+  CLC
+  ADC collision_high
+  STA collision_high
+  LDA p1_sprite_x
+  LSR A
+  LSR A
+  LSR A; divide by 8
+  CLC
+  ADC collision_low
+  STA collision_low
+  LDA collision_high
+  ADC #$00 ; add any carry to high bit
+  STA collision_high
+  LDA (collision_low)
   CMP #$00
   BEQ NoVerticalCollision   ; branch if collision map is 0
   LDA p1_sprite_x

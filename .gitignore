@@ -1,0 +1,6 @@
+*.fns
+*.nes
+*.deb
+*.wch
+*.swp
+!RomRelease/*.nes
