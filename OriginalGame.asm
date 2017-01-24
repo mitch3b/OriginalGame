@@ -198,8 +198,8 @@ LoadBackground:
   STA PPU_ADDRESS       ; write the high byte of $2000 address
   LDA #$00
   STA PPU_ADDRESS       ; write the low byte of $2000 address
-  LDX $00
-  LDY $00
+  LDX #$00
+  LDY #$00
   LDA #$24
 LoadBackgroundLoop:
   STA PPU_DATA
