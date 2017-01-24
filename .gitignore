@@ -3,4 +3,5 @@
 *.deb
 *.wch
 *.swp
+OriginalGame.txt
 !RomRelease/*.nes

@@ -61,15 +61,19 @@ GRAVITY = %00000001
 MAX_FALL_SPEED = %00000111
 
 p1_current_sprite_index .rs 1 ; TODO this should be calculatable from the sprite itself
+  .rsset $0000 ; zero page important stuff
+collision_low  .rs 1   ; Don't know a better way to do this at least yet
+collision_high .rs 1
 
+  .rsset $0300
 collision_map .rs 960 ; This should be 960, but keep it simple for now
-collision_high  .rs 1   ; Don't know a better way to do this at least yet
-collision_low .rs 1
+
 
 ;;;;;;;;;;;;;;;
 
   .bank 0
   .org $C000
+
 RESET:
   SEI          ; disable IRQs
   CLD          ; disable decimal mode
@@ -185,9 +189,9 @@ LoadPalettesLoop:
   RTS
 
 LoadBackground:
-  LDA low(collision_map)
+  LDA #low(collision_map)
   STA collision_low
-  LDA high(collision_map)
+  LDA #high(collision_map)
   STA collision_high
   LDA PPU_STATUS        ; read PPU status to reset the high/low latch
   LDA #$20
@@ -199,7 +203,7 @@ LoadBackground:
   LDA #$24
 LoadBackgroundLoop:
   STA PPU_DATA
-  STA (collision_low), y
+  sta [collision_low], Y
   INY
   CPY #$00
   BNE LoadBackgroundLoop
@@ -215,7 +219,7 @@ LoadBackgroundLoop:
   LDA #$00
 LoadBackgroundFloorLoop:
   STA PPU_DATA
-  STA (collision_low), y
+  STA [collision_low],y
   INY
   CPY #$10
   BNE LoadBackgroundFloorLoop
@@ -230,7 +234,7 @@ LoadBackgroundFloorLoop:
   LDA #$24
 LoadBackgroundRestLoop:        ; loaded 8x3 + 1 = 25. Have 5 left. 5x32 = 160 (or A0 in hex)
   STA PPU_DATA
-  STA (collision_low), y
+  STA [collision_low],y
   INY
   CPY #$B0
   BNE LoadBackgroundRestLoop
@@ -351,11 +355,12 @@ UpdateP1WithYVelocityDone:
 MoveP1Vertically:
   JSR UpdateVelocityGravity
   JSR UpdateP1WithYVelocity
+  JMP NoVerticalCollision ; todo 
 
   ; Do collision detection
-  LDA low(collision_map)
+  LDA #low(collision_map)
   STA collision_low
-  LDA high(collision_map)
+  LDA #high(collision_map)
   STA collision_high
   LDA p1_sprite_y
   LSR A
