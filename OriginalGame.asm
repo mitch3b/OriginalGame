@@ -47,6 +47,8 @@ BUTTON_DOWN   = %00000100
 BUTTON_LEFT   = %00000010
 BUTTON_RIGHT  = %00000001
 
+  .rsset $0000 ; zero page important stuff
+
 p1_buttons   .rs 1
 p1_sprite_y = $0200
 p1_sprite_tile = $0201
@@ -61,7 +63,7 @@ GRAVITY = %00000001
 MAX_FALL_SPEED = %00000111
 
 p1_current_sprite_index .rs 1 ; TODO this should be calculatable from the sprite itself
-  .rsset $0000 ; zero page important stuff
+
 collision_low  .rs 1   ; Don't know a better way to do this at least yet
 collision_high .rs 1
 
@@ -147,7 +149,7 @@ NMI:
 ; Load p1 sprite onto the screen
 ; ###################
 LoadP1:
-  LDA #$A0 ; for now initialize to random values
+  LDA #$00 ; for now initialize to random values
   STA p1_sprite_y
   STA p1_sprite_x
   LDA #$00
@@ -236,35 +238,9 @@ LoadBackgroundRestLoop:        ; loaded 8x3 + 1 = 25. Have 5 left. 5x32 = 160 (o
   STA PPU_DATA
   STA [collision_low],y
   INY
-  CPY #$B0
+  CPY #$B0 ; TODO not confident we're not going too far here...
   BNE LoadBackgroundRestLoop
 LoadBackgroundDone:
-  RTS
-
-;TODO this is just a proof of checking nametable. will want more robust
-CheckFloor:
-  LDA p1_sprite_x
-  LSR A
-  LSR A
-  LSR A              ; divide by 8
-  TAX
-  LDA p1_sprite_y
-  LSR A
-  LSR A
-  LSR A              ; divide by 8
-  TAY
-  LDA p1_sprite_y
-  AND %00000111
-  BEQ CheckFloorOnExactPixel ; If we're in between tiles, want to round up (more y is lower on screen)
-  INY
-CheckFloorOnExactPixel:
-  ; Now x, y are setup for tile num, translate them to nametable address
-  ; TODO
-  LDA PPU_STATUS        ; read PPU status to reset the high/low latch
-  LDA #$20
-  STA PPU_ADDRESS       ; write the high byte of $2000 address
-  LDA #$00
-  STA PPU_ADDRESS       ; write the low byte of $2000 address
   RTS
 
 ; ###################
@@ -355,7 +331,6 @@ UpdateP1WithYVelocityDone:
 MoveP1Vertically:
   JSR UpdateVelocityGravity
   JSR UpdateP1WithYVelocity
-  JMP NoVerticalCollision ; todo 
 
   ; Do collision detection
   LDA #low(collision_map)
@@ -363,11 +338,18 @@ MoveP1Vertically:
   LDA #high(collision_map)
   STA collision_high
   LDA p1_sprite_y
+  CLC
+  ADC #$08 ; Want bottom
   LSR A
   LSR A
-  LSR A ; divide by 8 to remove mid pixels
-  ; 32 per line, 256 per byte so 8 different sections. so mod 8 goes to low bit and divide 8 goes to high
+  LSR A ; divide by 8 to remove mid pixels/round to nearest tile
+  ; A is 1-30. want to add to low 256 byte chunk. Means each 8 rows (32 bytes per row) will apply to different high bytes. So mod 8 and multiply by 32 and add to low byte
   AND #%00000111 ; Mod 8
+  ASL A ; x2
+  ASL A ; x4
+  ASL A ; x8
+  ASL A ; x16
+  ASL A ; multiplied by 32
   CLC
   ADC collision_low
   STA collision_low
@@ -375,16 +357,18 @@ MoveP1Vertically:
   ADC #$00 ; add any carry to high bit
   STA collision_high
   LDA p1_sprite_y
+  CLC
+  ADC #$08 ; Want bottom
   LSR A
   LSR A
-  LSR A; divide by 8 to remove mid pixels
+  LSR A; A is 1-30. want to add to high byte. Already added to low byte. divide by 8 should be added to high pixel
   LSR A
   LSR A
   LSR A ; divide by 8 because 8 tiles high x 32 tiles wide = 256 bytes, so add to high
   CLC
   ADC collision_high
   STA collision_high
-  LDA p1_sprite_x
+  LDA p1_sprite_x ; TODO get y working first
   LSR A
   LSR A
   LSR A; divide by 8
@@ -394,12 +378,10 @@ MoveP1Vertically:
   LDA collision_high
   ADC #$00 ; add any carry to high bit
   STA collision_high
-  LDA (collision_low)
-  CMP #$00
-  BEQ NoVerticalCollision   ; branch if collision map is 0
-  LDA p1_sprite_x
-  CMP #%10000000
-  BCS NoVerticalCollision
+  LDY #$00 ; TODO don't know if this is necessary, might be able to do next line w/o y
+  LDA [collision_low], y
+  CMP #$24
+  BEQ NoVerticalCollision   ; branch if collision map is background
   LDA #$01
   STA p1_on_ground
   STA p1_vertical_velocity
