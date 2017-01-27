@@ -64,8 +64,7 @@ MAX_FALL_SPEED = %00000111
 
 p1_current_sprite_index .rs 1 ; TODO this should be calculatable from the sprite itself
 
-collision_low  .rs 1   ; Don't know a better way to do this at least yet
-collision_high .rs 1
+collision_ptr  .rs 2
 background_ptr .rs 2
 
   .rsset $0300
@@ -150,7 +149,7 @@ NMI:
 ; Load p1 sprite onto the screen
 ; ###################
 LoadP1:
-  LDA #$00 ; for now initialize to random values
+  LDA #$A0 ; for now initialize to random values
   STA p1_sprite_y
   STA p1_sprite_x
   LDA #$00
@@ -197,9 +196,9 @@ LoadBackground:
   LDA #high(background)
   STA background_ptr+1
   LDA #low(collision_map)
-  STA collision_low
+  STA collision_ptr
   LDA #high(collision_map)
-  STA collision_high
+  STA collision_ptr+1
   LDA PPU_STATUS        ; read PPU status to reset the high/low latch
   LDA #$20
   STA PPU_ADDRESS       ; write the high byte of $2000 address
@@ -210,14 +209,14 @@ LoadBackground:
 LoadBackgroundLoop:
   LDA [background_ptr], Y
   STA PPU_DATA
-  sta [collision_low], Y
+  sta [collision_ptr], Y
   INY
   CPY #$00
   BNE LoadBackgroundLoop
-  LDA collision_high
+  LDA collision_ptr+1
   CLC
   ADC #$01
-  STA collision_high
+  STA collision_ptr+1
   LDA background_ptr+1
   CLC
   ADC #$01
@@ -229,7 +228,7 @@ LoadBackgroundLoop:
 LoadBackgroundLast: ; doesn't divide even and have 192 left TODO do this all better
   LDA [background_ptr], Y
   STA PPU_DATA
-  STA [collision_low], Y
+  STA [collision_ptr], Y
   INY
   CPY #$C0 ; 192d
   BNE LoadBackgroundLast
@@ -254,6 +253,7 @@ CheckP1Jump:
   STA p1_direction_y          ; anything but 0 means up on screen
 P1NotNewJump:
   JSR MoveP1Vertically
+; TODO vertically has the left/right collision which is wrong, refactor this
 CheckP1Direction:
   LDA p1_buttons
   AND #BUTTON_LEFT
@@ -327,12 +327,10 @@ MoveP1Vertically:
 
   ; Do collision detection
   LDA #low(collision_map)
-  STA collision_low
+  STA collision_ptr
   LDA #high(collision_map)
-  STA collision_high
+  STA collision_ptr+1
   LDA p1_sprite_y
-  CLC
-  ADC #$08 ; Want bottom
   LSR A
   LSR A
   LSR A ; divide by 8 to remove mid pixels/round to nearest tile
@@ -344,14 +342,12 @@ MoveP1Vertically:
   ASL A ; x16
   ASL A ; multiplied by 32
   CLC
-  ADC collision_low
-  STA collision_low
-  LDA collision_high
+  ADC collision_ptr
+  STA collision_ptr
+  LDA collision_ptr+1
   ADC #$00 ; add any carry to high bit
-  STA collision_high
+  STA collision_ptr+1
   LDA p1_sprite_y
-  CLC
-  ADC #$08 ; Want bottom
   LSR A
   LSR A
   LSR A; A is 1-30. want to add to high byte. Already added to low byte. divide by 8 should be added to high pixel
@@ -359,29 +355,116 @@ MoveP1Vertically:
   LSR A
   LSR A ; divide by 8 because 8 tiles high x 32 tiles wide = 256 bytes, so add to high
   CLC
-  ADC collision_high
-  STA collision_high
-  LDA p1_sprite_x ; TODO get y working first
+  ADC collision_ptr+1
+  STA collision_ptr+1
+  LDA p1_sprite_x
   LSR A
   LSR A
   LSR A; divide by 8
   CLC
-  ADC collision_low
-  STA collision_low
-  LDA collision_high
+  ADC collision_ptr
+  STA collision_ptr
+  LDA collision_ptr+1
   ADC #$00 ; add any carry to high bit
-  STA collision_high
-  LDY #$00 ; TODO don't know if this is necessary, might be able to do next line w/o y
-  LDA [collision_low], y
-  CMP #$24
-  BEQ NoVerticalCollision   ; branch if collision map is background
+  STA collision_ptr+1
+; collision ptr is on the Top left tile
+
+CheckVerticalCollision:
+  LDA p1_sprite_y
+  AND #%00000111
+  CMP #$00
+  BEQ NoVerticalCollision
+; Check Ceiling
+  LDY #$00 ; Already on top left tile
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ CeilingCollision
+  LDY #$01 ; right ceiling is 1 tile over
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ CeilingCollision
+  JMP NoCeilingCollision
+CeilingCollision
+  LDA #$00
+  STA p1_vertical_velocity ; Stop vertical velocity
+  LDA p1_sprite_y
+  CLC
+  ADC #$08                  ; make sure we round up
+  AND #%11111000            ; round off pixels to the lower 8
+  STA p1_sprite_y
+NoCeilingCollision:
+; Check Floor
+  LDY #$20 ; left floor is 1 tile down or 32 tiles later
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ FloorCollision
+  LDY #$21 ; right floor is 1 tile down and 1 tile over, or 33 tiles later
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ FloorCollision
+  JMP NoFloorCollision
+FloorCollision:
   LDA #$01
   STA p1_on_ground
   STA p1_vertical_velocity
   LDA p1_sprite_y
   AND #%11111000            ; round off pixels to the lower 8
+  ;SEC
+  ;SBC #$01
   STA p1_sprite_y
+NoFloorCollision:
 NoVerticalCollision:
+; Check Left
+  LDA p1_sprite_x
+  AND #%00000111
+  CMP #$00
+  BEQ NoHorizontalCollision ; on exact pixel so no collision to check
+  LDY #$00 ; Already on top left tile
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ LeftCollision
+  LDA p1_sprite_y
+  AND #%00000111
+  CMP #$00
+  BEQ NoLeftCollision ; if we are exactly on a tile in terms of y, there is no top/bottom to check, just directly left
+  LDY #$20 ; need to go down one tile so need to wrap 32
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ LeftCollision
+  JMP NoLeftCollision
+LeftCollision
+  LDA p1_sprite_x
+  AND #%11111000            ; round off pixels to the upper 8
+  CLC
+  ADC #$08
+  STA p1_sprite_x
+NoLeftCollision
+  ;Check Right
+  LDY #$01 ; top right
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ RightCollision
+  LDA p1_sprite_y
+  AND #%00000111
+  CMP #$00
+  BEQ NoRightCollision ; if we are exactly on a tile in terms of y, there is no top/bottom to check, just directly left
+  LDY #$21 ; bottom right
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ RightCollision
+  JMP NoRightCollision
+RightCollision:
+  LDA p1_sprite_x
+  AND #%11111000            ; round off pixels to the lower 8
+  STA p1_sprite_x
+NoRightCollision:
+NoHorizontalCollision:
+  RTS
+
+;#################
+;# Helper methods
+;#################
+AddAToCollisionPtr
   RTS
 
 MoveP1Left:
@@ -470,49 +553,49 @@ background:
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 2
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 3
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 3
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 4
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 4
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 5
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 5
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 6
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 6
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 7
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 7
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 8
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 8
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 9
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 9
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 10
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 10
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 11
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 11
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 12
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 12
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 13
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 13
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 14
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 14
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 15
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 15
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 16
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 16
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 17
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 17
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 18
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 18
+  .db $24, $24, $00, $00, $00, $00, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 19
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 19
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 20
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 21
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 22
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 23
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 24
+  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 20
+  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $24
+  .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $00 ; row 21
+  .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $00 ; row 22
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 23
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24
+  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24 ; row 25
   .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24
@@ -531,7 +614,7 @@ p1_run:
 
   .org $FFFA     ;first of the three vectors starts here
   .dw NMI        ;when an NMI happens (once per frame if enabled) the
-                   ;processor will jump to the label NMI:
+                   ;processor will jump to the label NMI
   .dw RESET      ;when the processor first turns on or is reset, it will jump
                    ;to the label RESET:
   .dw 0          ;external interrupt IRQ is not used
