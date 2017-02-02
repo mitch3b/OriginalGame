@@ -19,6 +19,19 @@ PPU_CTRL_REG1         = $2000
 ;          vertical blanking interval (0: off; 1: on)
 
 PPU_CTRL_REG2         = $2001
+;76543210
+;||||||||
+;|||||||+- Grayscale (0: normal color; 1: AND all palette entries
+;|||||||   with 0x30, effectively producing a monochrome display;
+;|||||||   note that colour emphasis STILL works when this is on!)
+;||||||+-- Disable background clipping in leftmost 8 pixels of screen
+;|||||+--- Disable sprite clipping in leftmost 8 pixels of screen
+;||||+---- Enable background rendering
+;|||+----- Enable sprite rendering
+;||+------ Intensify reds (and darken other colors)
+;|+------- Intensify greens (and darken other colors)
+;+-------- Intensify blues (and darken other colors)
+
 PPU_STATUS            = $2002
 PPU_SPR_ADDR          = $2003
 PPU_SPR_DATA          = $2004
@@ -140,6 +153,8 @@ NMI:
   JSR MoveP1
 
   LDA #$00
+  STA PPU_ADDRESS        ; clean up PPU address registers
+  STA PPU_ADDRESS
   STA PPU_SCROLL_REG
   STA PPU_SCROLL_REG
 
@@ -240,18 +255,7 @@ LoadBackgroundDone:
 ; ###################
 MoveP1:
 CheckP1Jump:
-  LDA p1_on_ground
-  CMP #$01
-  BNE P1NotNewJump            ; if already moving vertically, can't jump
-  LDA p1_buttons
-  AND #BUTTON_A
-  BEQ P1NotNewJump            ; if a is not pressed, don't jump
-  LDA #$00
-  STA p1_on_ground
-  LDA #JUMP_VELOCITY
-  STA p1_vertical_velocity
-  STA p1_direction_y          ; anything but 0 means up on screen
-P1NotNewJump:
+  JSR CheckForJump
   JSR MoveP1Vertically
 ; TODO vertically has the left/right collision which is wrong, refactor this
 CheckP1Direction:
@@ -267,6 +271,23 @@ TryMoveP1Right:
   JSR MoveP1Right
   JMP MoveP1Done
 MoveP1Done:
+  JSR SetCollisionPointer       ; puts collision ptr is on the Top left tile
+  JSR CheckHorizontalCollision
+  RTS
+
+CheckForJump:
+  LDA p1_on_ground
+  CMP #$01
+  BNE P1NotNewJump            ; if already moving vertically, can't jump
+  LDA p1_buttons
+  AND #BUTTON_A
+  BEQ P1NotNewJump            ; if a is not pressed, don't jump
+  LDA #$00
+  STA p1_on_ground
+  LDA #JUMP_VELOCITY
+  STA p1_vertical_velocity
+  STA p1_direction_y          ; anything but 0 means up on screen
+  P1NotNewJump:
   RTS
 
 UpdateVelocityGravity:
@@ -326,6 +347,124 @@ MoveP1Vertically:
   JSR UpdateP1WithYVelocity
 
   ; Do collision detection
+  JSR SetCollisionPointer       ; puts collision ptr is on the Top left tile
+  JSR CheckVerticalCollision
+  RTS
+
+CheckHorizontalCollision:
+  ; Check Left
+  LDA p1_sprite_x
+  AND #%00000111
+  CMP #$00
+  BEQ NoHorizontalCollision ; on exact pixel so no collision to check
+  LDY #$00 ; Already on top left tile
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ LeftCollision
+  LDA p1_sprite_y
+  AND #%00000111
+  CMP #$00
+  BEQ NoLeftCollision ; if we are exactly on a tile in terms of y, there is no top/bottom to check, just directly left
+  LDY #$20 ; need to go down one tile so need to wrap 32
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ LeftCollision
+  JMP NoLeftCollision
+LeftCollision:
+  LDA p1_sprite_x
+  AND #%11111000            ; round off pixels to the upper 8
+  CLC
+  ADC #$08
+  STA p1_sprite_x
+NoLeftCollision:
+  ;Check Right
+  LDY #$01 ; top right
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ RightCollision
+  LDA p1_sprite_y
+  AND #%00000111
+  CMP #$00
+  BEQ NoRightCollision ; if we are exactly on a tile in terms of y, there is no top/bottom to check, just directly left
+  LDY #$21 ; bottom right
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ RightCollision
+  JMP NoRightCollision
+RightCollision:
+  LDA p1_sprite_x
+  AND #%11111000            ; round off pixels to the lower 8
+  STA p1_sprite_x
+NoRightCollision:
+NoHorizontalCollision:
+  RTS
+
+CheckVerticalCollision:
+  LDA p1_sprite_y
+  AND #%00000111
+  CMP #$00
+  BEQ NoVerticalCollision ; if we're on an exact tile, no collision correction
+  LDA p1_direction_y ; 0 means going down
+  CMP #$00
+  BEQ CheckFloorCollision
+; Check Ceiling
+  LDY #$00 ; Already on top left tile
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ CeilingCollision
+  LDA p1_sprite_x
+  AND #%00000111
+  CMP #$00
+  BEQ NoCeilingCollision
+  LDY #$01 ; right ceiling is 1 tile over
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ CeilingCollision
+  JMP NoCeilingCollision
+CeilingCollision
+  LDA #$00
+  STA p1_vertical_velocity ; Stop vertical velocity
+  LDA p1_sprite_y
+  CLC
+  ADC #$08                  ; make sure we round up
+  AND #%11111000            ; round off pixels to the lower 8
+  STA p1_sprite_y
+NoCeilingCollision:
+  JMP NoVerticalCollision
+; Check Floor
+CheckFloorCollision:
+  LDY #$20 ; left floor is 1 tile down or 32 tiles later
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ FloorCollision
+  LDA p1_sprite_x
+  AND #%00000111
+  CMP #$00
+  BEQ NoFloorCollision
+  LDY #$21 ; right floor is 1 tile down and 1 tile over, or 33 tiles later
+  LDA [collision_ptr], Y
+  CMP #$00
+  BEQ FloorCollision
+  JMP NoFloorCollision
+FloorCollision:
+  LDA #$01
+  STA p1_on_ground
+  LDA #$00
+  STA p1_vertical_velocity
+  LDA p1_sprite_y
+  AND #%11111000            ; round off pixels to the lower 8
+  ;SEC
+  ;SBC #$01
+  STA p1_sprite_y
+NoFloorCollision:
+NoVerticalCollision:
+  RTS
+
+;#################
+;# Helper methods
+;#################
+; set collision_ptr to top left tile
+SetCollisionPointer
   LDA #low(collision_map)
   STA collision_ptr
   LDA #high(collision_map)
@@ -367,104 +506,6 @@ MoveP1Vertically:
   LDA collision_ptr+1
   ADC #$00 ; add any carry to high bit
   STA collision_ptr+1
-; collision ptr is on the Top left tile
-
-CheckVerticalCollision:
-  LDA p1_sprite_y
-  AND #%00000111
-  CMP #$00
-  BEQ NoVerticalCollision
-; Check Ceiling
-  LDY #$00 ; Already on top left tile
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ CeilingCollision
-  LDY #$01 ; right ceiling is 1 tile over
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ CeilingCollision
-  JMP NoCeilingCollision
-CeilingCollision
-  LDA #$00
-  STA p1_vertical_velocity ; Stop vertical velocity
-  LDA p1_sprite_y
-  CLC
-  ADC #$08                  ; make sure we round up
-  AND #%11111000            ; round off pixels to the lower 8
-  STA p1_sprite_y
-NoCeilingCollision:
-; Check Floor
-  LDY #$20 ; left floor is 1 tile down or 32 tiles later
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ FloorCollision
-  LDY #$21 ; right floor is 1 tile down and 1 tile over, or 33 tiles later
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ FloorCollision
-  JMP NoFloorCollision
-FloorCollision:
-  LDA #$01
-  STA p1_on_ground
-  STA p1_vertical_velocity
-  LDA p1_sprite_y
-  AND #%11111000            ; round off pixels to the lower 8
-  ;SEC
-  ;SBC #$01
-  STA p1_sprite_y
-NoFloorCollision:
-NoVerticalCollision:
-; Check Left
-  LDA p1_sprite_x
-  AND #%00000111
-  CMP #$00
-  BEQ NoHorizontalCollision ; on exact pixel so no collision to check
-  LDY #$00 ; Already on top left tile
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ LeftCollision
-  LDA p1_sprite_y
-  AND #%00000111
-  CMP #$00
-  BEQ NoLeftCollision ; if we are exactly on a tile in terms of y, there is no top/bottom to check, just directly left
-  LDY #$20 ; need to go down one tile so need to wrap 32
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ LeftCollision
-  JMP NoLeftCollision
-LeftCollision
-  LDA p1_sprite_x
-  AND #%11111000            ; round off pixels to the upper 8
-  CLC
-  ADC #$08
-  STA p1_sprite_x
-NoLeftCollision
-  ;Check Right
-  LDY #$01 ; top right
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ RightCollision
-  LDA p1_sprite_y
-  AND #%00000111
-  CMP #$00
-  BEQ NoRightCollision ; if we are exactly on a tile in terms of y, there is no top/bottom to check, just directly left
-  LDY #$21 ; bottom right
-  LDA [collision_ptr], Y
-  CMP #$00
-  BEQ RightCollision
-  JMP NoRightCollision
-RightCollision:
-  LDA p1_sprite_x
-  AND #%11111000            ; round off pixels to the lower 8
-  STA p1_sprite_x
-NoRightCollision:
-NoHorizontalCollision:
-  RTS
-
-;#################
-;# Helper methods
-;#################
-AddAToCollisionPtr
   RTS
 
 MoveP1Left:
@@ -587,25 +628,25 @@ background:
   .db $24, $24, $00, $00, $00, $00, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 19
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 20
+  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $00, $00 ; row 20
   .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $00 ; row 21
+  .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $00, $24, $00, $00 ; row 21
   .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $00 ; row 22
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $00, $24, $00, $00 ; row 22
   .db $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 23
+  .db $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $00, $24, $00, $00 ; row 23
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 24
+  .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $00, $24, $00, $00 ; row 24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24 ; row 25
+  .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $00, $24, $00, $00 ; row 25
   .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 26
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00, $00 ; row 26
   .db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
   .db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00; row 27
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 28
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 29
+  .db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
+  .db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00 ; row 29
   .db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
   .db $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00 ; row 30
 
