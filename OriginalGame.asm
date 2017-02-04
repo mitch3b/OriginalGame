@@ -403,7 +403,9 @@ CheckVerticalCollision:
   LDA p1_sprite_y
   AND #%00000111
   CMP #$00
-  BEQ NoVerticalCollision ; if we're on an exact tile, no collision correction
+  BNE TMPMarkerVertCollision
+  JMP NoVerticalCollision ; if we're on an exact tile, no collision correction
+TMPMarkerVertCollision: ; Need this until refactor else the beq NoVertCollision is too far
   LDA p1_direction_y ; 0 means going down
   CMP #$00
   BEQ CheckFloorCollision
@@ -440,6 +442,15 @@ CheckFloorCollision:
   AND #%11111110
   CMP #$00
   BEQ FloorCollision
+  ; Check for fall through
+  LDA p1_buttons
+  AND #BUTTON_DOWN
+  BNE CheckFloorRight ; if down is pressed, no collision
+  ; TODO check if we're coming from above the platform (else you'll end up on top if you just jumped half way up the tile. can reuse this logic to save some calculations above)
+  LDA [collision_ptr], Y
+  CMP #$10
+  BEQ FloorCollision
+CheckFloorRight:
   LDA p1_sprite_x
   AND #%00000111
   CMP #$00
@@ -448,6 +459,14 @@ CheckFloorCollision:
   LDA [collision_ptr], Y
   AND #%11111110
   CMP #$00
+  BEQ FloorCollision
+  ; Check for fall through
+  LDA p1_buttons
+  AND #BUTTON_DOWN
+  BNE NoFloorCollision ; if down is pressed, no collision
+  ; TODO check if we're coming from above the platform (else you'll end up on top if you just jumped half way up the tile. can reuse this logic to save some calculations above)
+  LDA [collision_ptr], Y
+  CMP #$10
   BEQ FloorCollision
   JMP NoFloorCollision
 FloorCollision:
@@ -596,7 +615,7 @@ background:
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 1
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24 ; row 2
+  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 2
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00 ; row 3
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
@@ -641,7 +660,7 @@ background:
   .db $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $00, $24, $00, $00 ; row 23
   .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $00, $24, $00, $00 ; row 24
-  .db $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
+  .db $24, $24, $10, $10, $10, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $00, $24, $00, $00 ; row 25
   .db $24, $24, $24, $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24
   .db $24, $24, $24, $24, $00, $24, $24, $24, $24, $24, $24, $24, $24, $24, $00, $00 ; row 26
